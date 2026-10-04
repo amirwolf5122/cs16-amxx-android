@@ -1,0 +1,39 @@
+--- a/android/app/src/main/java/su/xash/engine/ui/settings/CompilerDialogFragment.kt    2026-10-04 01:09:04.301177836 +0000
++++ b/android/app/src/main/java/su/xash/engine/ui/settings/CompilerDialogFragment.kt    2026-10-04 01:56:19.777750706 +0000
+@@ -151,6 +151,14 @@
+                         appendLog((line ?: "") + "\n")
+                 }
+                 val code = proc.waitFor()
++                // old amxxpc builds exited 0 even on fatal compile errors and
++                // could leave a header-only stub .amxx (~36 bytes). Only
++                // report OK when a plausible plugin file actually exists.
++                if (code == 0 && (!out.isFile || out.length() < 256L)) {
++                        out.delete()
++                        appendLog("=== FAILED: ${script.name} (no valid plugin produced)\n")
++                        return 1
++                }
+                 appendLog(if (code == 0)
+                         "=== OK: ${out.name} (${out.length()} bytes)\n"
+                 else
+--- a/android/app/src/main/java/su/xash/engine/ui/settings/FullCompilerDialogFragment.kt        2026-10-04 01:09:04.301177836 +0000
++++ b/android/app/src/main/java/su/xash/engine/ui/settings/FullCompilerDialogFragment.kt        2026-10-04 01:56:19.498750176 +0000
+@@ -213,10 +213,16 @@
+                                         appendLog((line ?: "") + "\n")
+                                 }
+                                 val code = proc.waitFor()
+-                                appendLog(if (code == 0)
+-                                        "=== OK: ${out.name} (${out.length()} bytes)\n"
++                                // old amxxpc builds exited 0 even on fatal compile
++                                // errors and could leave a header-only stub .amxx
++                                // (~36 bytes). Validate before claiming OK.
++                                if (code == 0 && (!out.isFile || out.length() < 256L)) {
++                                        out.delete()
++                                        appendLog("=== FAILED (no valid plugin produced)\n")
++                                } else if (code == 0)
++                                        appendLog("=== OK: ${out.name} (${out.length()} bytes)\n")
+                                 else
+-                                        "=== FAILED (exit code $code)\n")
++                                        appendLog("=== FAILED (exit code $code)\n")
+                         } catch (t: Throwable) {
+                                 appendLog("! ${t.javaClass.simpleName}: ${t.message}\n")
+                         } finally {

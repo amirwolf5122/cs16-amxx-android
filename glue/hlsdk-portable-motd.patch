@@ -1,0 +1,59 @@
+diff --git a/cl_dll/hud.cpp b/cl_dll/hud.cpp
+index e84034b..d11eb93 100644
+--- a/cl_dll/hud.cpp
++++ b/cl_dll/hud.cpp
+@@ -214,6 +214,19 @@ int __MsgFunc_MOTD(const char *pszName, int iSize, void *pbuf)
+        bool finished = gHUD.m_MOTD.HandleMOTDMessage(pszName, iSize, pbuf);
+        if (finished)
+        {
++#ifdef XASH_ANDROID
++               // render the MOTD in the engine's sandboxed WebView dialog, just
++               // like the CS 1.6 client does on Android (the export is appended
++               // at the end of cl_enginefunc_t and stays NULL on engines that
++               // don't provide it). If the dialog cannot be shown, fall through
++               // to the classic HUD text renderer so the MOTD is never lost
++               // even on engines without the dialog.
++               if (gEngfuncs.pfnShowMOTD && gEngfuncs.pfnShowMOTD(gHUD.m_MOTD.m_szMOTD))
++               {
++                       gHUD.m_MOTD.Reset();
++                       return 1;
++               }
++#endif
+                if (gHUD.UseVguiMOTD() && gViewPort)
+                {
+                        gViewPort->ShowMOTD();
+diff --git a/cl_dll/hud.h b/cl_dll/hud.h
+index 32b43cd..bcf8cea 100644
+--- a/cl_dll/hud.h
++++ b/cl_dll/hud.h
+@@ -67,7 +67,7 @@ typedef struct cvar_s cvar_t;
+ 
+ #define MAX_PLAYER_NAME_LENGTH         32
+ 
+-#define        MAX_MOTD_LENGTH                         1536
++#define        MAX_MOTD_LENGTH                         4096 // room for full HTML pages
+ 
+ #define MAX_SERVERNAME_LENGTH  64
+ #define MAX_TEAMNAME_SIZE 32
+diff --git a/engine/cdll_int.h b/engine/cdll_int.h
+index 6462049..123314e 100644
+--- a/engine/cdll_int.h
++++ b/engine/cdll_int.h
+@@ -306,6 +306,17 @@ typedef struct cl_enginefuncs_s
+ 
+        // added in 2019 update, not documented yet
+        int             (*pfnFilteredClientCmd)( const char *cmd );
++
++       // show an HTML "MOTD" user message in a
++       // sandboxed platform dialog (Android: WebView). Returns true when the
++       // dialog is on screen, false so the client dll can use its own HUD
++       // fallback. Appending here is ABI-safe: client dlls built against
++       // older headers simply copy a smaller struct.
++       int     (*pfnShowMOTD)( const char *html );
++
++       // true while the platform MOTD dialog is on
++       // screen (used by the CS client to defer the team select menu).
++       int     (*pfnIsMOTDDialogActive)( void );
+ } cl_enginefunc_t;
+ 
+ #define CLDLL_INTERFACE_VERSION        7

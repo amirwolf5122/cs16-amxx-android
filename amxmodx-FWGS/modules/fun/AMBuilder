@@ -1,0 +1,15 @@
+# vim: set sts=2 ts=8 sw=2 tw=99 et ft=python:
+import os.path
+
+binary = AMXX.MetaModule(builder, 'fun')
+ 
+binary.sources = [
+  '../../public/sdk/amxxmodule.cpp',
+  '../../public/memtools/MemoryUtils.cpp',
+  'fun.cpp',
+]
+
+if builder.target_platform == 'windows':
+  binary.sources += ['version.rc']
+  
+AMXX.modules += [builder.Add(binary)]
