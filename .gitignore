@@ -1,0 +1,46 @@
+# ---- build outputs (CI rebuilds everything) ----
+**/build/
+**/.cxx/
+**/obj/
+**/libs/
+**/jniLibs/
+!stage/**/*.so
+glue/out/
+out/
+dist/
+
+
+# ---- generated assets (CI rebuilds) ----
+cs16-client-main/android/app/src/main/assets/addons/
+cs16-client-main/android/app/src/main/assets/addons.zip
+cs16-client-main/android/app/src/main/assets/addons_version.txt
+# base content is identical to 3rdparty/cs16client-extras (CI copies it)
+cs16-client-main/android/app/src/main/assets/BotChatter.db
+cs16-client-main/android/app/src/main/assets/BotProfile.db
+cs16-client-main/android/app/src/main/assets/gfx/
+cs16-client-main/android/app/src/main/assets/media/
+cs16-client-main/android/app/src/main/assets/sound/
+cs16-client-main/android/app/src/main/assets/touch/
+cs16-client-main/android/app/src/main/assets/touch.cfg
+cs16-client-main/android/app/src/main/assets/touch_default/
+cs16-client-main/android/app/src/main/assets/touch_presets/
+cs16-client-main/android/app/src/main/assets/userconfig.d/
+cs16-client-main/android/app/src/main/assets/maps/
+xash3d-fwgs-master/android/app/src/main/assets/valve-addons.zip
+
+# ---- 3rdparty junk (huge, not needed to build) ----
+xash3d-fwgs-master/3rdparty/SDL/test/
+xash3d-fwgs-master/3rdparty/gl4es/gl4es/traces/
+xash3d-fwgs-master/android/app/src/asan/
+
+# ---- android / java ----
+local.properties
+*.iml
+.idea/
+.gradle/
+
+# ---- misc ----
+*.log
+testcontent/
+.DS_Store
+xash3d-fwgs-master/.git

@@ -1,0 +1,182 @@
+name: Build APKs
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      amxx_version:
+        description: 'AMX Mod X version to ship (1.8.3 = the in-tree fork with our device fixes)'
+        required: false
+        default: '1.8.3'
+        type: choice
+        options: [ '1.8.3', '1.8.2', '1.9', '1.10' ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    env:
+      # cs16-client requires engine buildnum >= 4190 (= 2026-09-20 build
+      # date in upstream's date scheme). Pin the effective build date so
+      # Q_buildnum() passes the client's version gate.
+      XASH_BUILD_COMMIT_DATE: "2026-10-01"
+      AMXX_VERSION: ${{ github.event.inputs.amxx_version || '1.8.3' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install NDK 29 + CMake + Ninja
+        shell: bash
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;29.0.14206865" "cmake;3.22.1" > /dev/null
+          sudo apt-get update -qq && sudo apt-get install -y -qq ninja-build zip unzip
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
+
+      - name: Write local.properties
+        shell: bash
+        run: |
+          echo "sdk.dir=$ANDROID_HOME" > xash3d-fwgs-master/android/local.properties
+          echo "sdk.dir=$ANDROID_HOME" > cs16-client-main/android/local.properties
+
+      - name: Build hlsdk-portable + mainui for Android (valve game support)
+        shell: bash
+        run: |
+          set -e
+          # hlsdk-portable is gitignored inside the engine source and the
+          # gradle-internal cmake flow fails silently, so build it here with
+          # visible output: libhl_android_*.so + libclient_android_*.so
+          git clone --depth 1 -b mobile_hacks --recursive --shallow-submodules \
+            https://github.com/FWGS/hlsdk-portable \
+            xash3d-fwgs-master/3rdparty/hlsdk-portable
+
+          # route the HL (valve) client MOTD through the engine's sandboxed
+          # WebView dialog like the CS client does: the patch appends
+          # pfnShowMOTD/pfnIsMOTDDialogActive at the end of cl_enginefunc_t
+          # (ABI-safe) and calls the dialog from __MsgFunc_MOTD. Forward mode,
+          # so if upstream reflows the file we degrade to the plain text MOTD
+          # instead of breaking the build.
+          patch -d xash3d-fwgs-master/3rdparty/hlsdk-portable -p1 --forward \
+            < glue/hlsdk-portable-motd.patch || \
+            echo "::warning::hlsdk MOTD patch did not apply cleanly (upstream changed?); valve MOTD falls back to HUD text"
+
+          TC="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake"
+          JNILIBS="$PWD/xash3d-fwgs-master/android/app/src/main/jniLibs"
+
+          # ---- hlsdk-portable: HL server (libhl) + client (libclient) ----
+          for ABI in arm64-v8a armeabi-v7a; do
+            EXTRA=""
+            if [ "$ABI" = "arm64-v8a" ]; then EXTRA="-D64BIT=ON"; fi
+            cmake -S xash3d-fwgs-master/3rdparty/hlsdk-portable -B build/hlsdk-$ABI \
+              -DCMAKE_TOOLCHAIN_FILE="$TC" \
+              -DANDROID_ABI=$ABI -DANDROID_PLATFORM=android-21 -DANDROID_NDK="$ANDROID_NDK_HOME" \
+              -DCMAKE_SYSTEM_NAME=Android -DCMAKE_SYSTEM_VERSION=21 \
+              -DCMAKE_BUILD_TYPE=Release -DANDROID_APK=ON $EXTRA
+            cmake --build build/hlsdk-$ABI -j"$(nproc)"
+            cmake --install build/hlsdk-$ABI --prefix "$JNILIBS/$ABI"
+          done
+
+          # ---- mainui_cpp: game menu (libmenu.so, engine-suffixed neutral name) ----
+          # The CMakeLists references ${CMAKE_SOURCE_DIR}/common/interface.cpp and
+          # ${CMAKE_SOURCE_DIR}/public (cl_dll exports) — it is designed to be
+          # add_subdirectory'ed from the game root; provide both for standalone
+          # builds. XASH SDK headers come from the bundled sdk_includes/
+          # (do NOT point XASH_SDK at hlsdk: it lacks menu_int.h).
+          mkdir -p cs16-client-main/3rdparty/mainui_cpp/common
+          cp cs16-client-main/common/interface.cpp cs16-client-main/3rdparty/mainui_cpp/common/
+          cp cs16-client-main/common/interface.h   cs16-client-main/3rdparty/mainui_cpp/common/
+          cp -r cs16-client-main/public            cs16-client-main/3rdparty/mainui_cpp/public
+          # IGameMenuExports.h does '#include "../dlls/cdll_dll.h"' which
+          # resolves as <includedir>/../dlls/cdll_dll.h → mainui_cpp/dlls/
+          mkdir -p cs16-client-main/3rdparty/mainui_cpp/dlls
+          cp cs16-client-main/dlls/cdll_dll.h cs16-client-main/3rdparty/mainui_cpp/dlls/
+          for ABI in arm64-v8a armeabi-v7a; do
+            cmake -S cs16-client-main/3rdparty/mainui_cpp -B build/mainui-$ABI \
+              -DCMAKE_TOOLCHAIN_FILE="$TC" \
+              -DANDROID_ABI=$ABI -DANDROID_PLATFORM=android-21 -DANDROID_NDK="$ANDROID_NDK_HOME" \
+              -DCMAKE_SYSTEM_NAME=Android -DCMAKE_SYSTEM_VERSION=21 \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DBUILD_AS_PART_OF_ENGINE=ON
+            cmake --build build/mainui-$ABI -j"$(nproc)"
+            cmake --install build/mainui-$ABI --prefix "$JNILIBS/$ABI"
+          done
+
+          echo "---- engine jniLibs ----"
+          ls -la "$JNILIBS"/arm64-v8a "$JNILIBS"/armeabi-v7a
+
+      - name: Build native (amxmodx + metamod + amxxpc) and stage assets
+        shell: bash
+        run: |
+          chmod +x glue/*.sh scripts/*.sh
+          bash scripts/build_native.sh
+
+      - name: Build engine APK (Xash3D FWGS AMXX)
+        shell: bash
+        run: |
+          cd xash3d-fwgs-master/android
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:assembleContinuous
+
+      - name: Build game APK (cs16client amxx)
+        shell: bash
+        run: |
+          cd cs16-client-main/android
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:assembleGitRelease
+
+      - name: Collect artifacts
+        shell: bash
+        run: |
+          mkdir -p dist symbols
+          # both gradle projects produce "app-<variant>.apk", so prefix the
+          # game APK with "cs16client-" to keep the two apart (people kept
+          # updating only the engine and missed the client.so changes
+          # shipped inside the game APK).
+          find xash3d-fwgs-master/android/app/build/outputs/apk -name "*.apk" -exec cp -v {} dist/ \;
+          find cs16-client-main/android/app/build/outputs/apk -name "*.apk" \
+            -exec bash -c 'cp -v "$1" "dist/cs16client-$(basename "$1")"' _ {} \;
+          cp out/cstrike-addons.zip dist/
+          cp out/valve-addons.zip dist/
+          # unstripped native libs for debugging: crash.log prints module +
+          # offset, these allow mapping that straight to a function
+          find xash3d-fwgs-master/android/app/build cs16-client-main/android/app/build \
+            -type f \( -name "libxash.so" -o -name "libclient_android_*.so" -o -name "libhl_android_*.so" \
+               -o -name "libmetamod_android_*.so" -o -name "libmm_amxmodx.so" -o -name "libamxx_*.so" \) \
+            -not -path "*stripped*" 2>/dev/null | sort -u | while read -r f; do cp -v "$f" symbols/ || true; done
+          ls -la dist/ symbols/ | head -40
+
+      - name: Upload APK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: apks
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Upload debug symbols
+        uses: actions/upload-artifact@v4
+        with:
+          name: symbols
+          path: symbols/*
+          if-no-files-found: ignore
+
+      - name: Release (main branch only)
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          TAG="build-$(date +%Y%m%d)-${GITHUB_SHA::7}"
+          gh release create "$TAG" dist/* --title "AMXX CS16 Android build $TAG" --notes "Automated build. Engine APK + Game APK + addons zips." || true
+          gh release upload "$TAG" dist/* --clobber || true

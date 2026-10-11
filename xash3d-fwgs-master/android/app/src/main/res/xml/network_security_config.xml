@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+	<!-- many server MOTDs redirect to plain-http pages (meta refresh or
+	links); without this the WebView kills them with
+	ERR_CLEARTEXT_NOT_PERMITTED and the MOTD window stays empty -->
+	<base-config cleartextTrafficPermitted="true">
+		<trust-anchors>
+			<certificates src="system"/>
+			<certificates src="@raw/isrgrootx1"/>
+		</trust-anchors>
+	</base-config>
+</network-security-config>

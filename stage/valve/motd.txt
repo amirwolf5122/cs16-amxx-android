@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Message of the Day</title>
+<style>
+body { background:#0b0b0b; color:#e8e8e8; font-family:Arial, sans-serif; text-align:center; padding:16px; }
+h1 { color:#ffcc00; font-size:22px; margin:6px 0; }
+h2 { color:#66ccff; font-size:15px; margin:4px 0; }
+p  { font-size:14px; line-height:1.5; margin:8px 0; }
+.box { background:#161616; border:1px solid #333; border-radius:6px; padding:10px 14px; margin:10px auto; max-width:520px; }
+.y { color:#ffcc00; } .g { color:#7CFC00; }
+</style>
+</head>
+<body>
+<h1>Welcome to AmirWolf Server</h1>
+<h2>Edited by t.me/amir_wolf512</h2>
+<div class="box">
+<p><span class="y">Server Rules:</span><br>
+1. No cheating or hacking<br>
+2. Respect other players<br>
+3. No spam or advertising</p>
+</div>
+<div class="box">
+<p>Type <span class="g">/top15</span> in chat to see the top players!<br>
+Type <span class="g">/rank</span> in chat to see your rank.</p>
+</div>
+<p>Good luck &amp; have fun!</p>
+</body>
+</html>

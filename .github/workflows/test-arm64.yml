@@ -1,0 +1,200 @@
+name: Test arm64
+
+# Runs the whole chain natively on an arm64 runner:
+#   engine (dedicated build) -> metamod -> AMX Mod X core -> modules ->
+#   plugins -> map spawn -> changelevel stress
+# The AMXX chain is built for the host arch with -D__ANDROID__, so the exact
+# Android code paths (MM_GAMELIBDIR, libamxx_<name>.so loading, 32-bit cells
+# with 64-bit pointers) get exercised on real arm64 hardware.
+
+on:
+  workflow_run:
+    workflows: [ "Build APKs" ]
+    types: [ completed ]
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  test:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build engine (dedicated) for host arch
+        shell: bash
+        run: |
+          cd xash3d-fwgs-master
+          python3 ./waf configure -T release -d -8
+          python3 ./waf build
+
+      - name: Fetch hlsdk-portable (gitignored inside engine source)
+        shell: bash
+        run: |
+          git clone --depth 1 -b mobile_hacks --recursive --shallow-submodules \
+            https://github.com/FWGS/hlsdk-portable \
+            xash3d-fwgs-master/3rdparty/hlsdk-portable
+
+      - name: Build HL gamedll for host arch
+        shell: bash
+        run: |
+          cd xash3d-fwgs-master/3rdparty/hlsdk-portable
+          python3 ./waf configure -T release -8
+          python3 ./waf build
+
+      - name: Build metamod + AMX Mod X chain for host arch
+        shell: bash
+        run: |
+          bash glue/build_host_chain.sh
+
+      - name: Build cstrike gamedll + YaPB (BUILD_SERVER=ON)
+        # real cstrike server dll, same ReGameDLL source as the Android
+        # libcs_android.so, so the tests run against the actual gamedll
+        shell: bash
+        run: |
+          cmake -S cs16-client-main -B out/cs-build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_CLIENT=OFF -DBUILD_MAINUI=OFF -DBUILD_SERVER=ON
+          cmake --build out/cs-build -j$(nproc)
+
+      - name: Verify register_native dyna trampoline codegen
+        # runs the real trampoline bytes from amxx_dyna_codegen.h natively,
+        # catches bad instruction encodings (this is where the aarch64
+        # "ldr x17, [pc, #4]" bug showed up)
+        shell: bash
+        run: |
+          mkdir -p out/host-test
+          cc -O0 -Wall -I amxmodx-FWGS/amxmodx scripts/dyna_tramp_test.c -o out/host-test/dyna_tramp_test
+          out/host-test/dyna_tramp_test
+
+      - name: Run full AMXX chain test and evaluate
+        shell: bash
+        run: bash scripts/run_host_test.sh
+
+      - name: Run full cstrike gamedll test (battery + cvar suite)
+        # every staged plugin + battery_test + cvar suite against the real
+        # ReGameDLL. The AMXX core auto-creates missing cvars (bot_quota etc.),
+        # so there is no compat plugin in the chain. ham-probe failures here
+        # are informational only: hamdata.ini never matches the locally built
+        # ReGameDLL, the device gamedll is verified separately.
+        shell: bash
+        env:
+          CS_HOST_TEST_MODE: ci
+        run: bash scripts/run_cstrike_host_test.sh
+
+      - name: Mod battery - clone third-party mods
+        # Biohazard / Deathrun / ZP5 and friends: every mod has to compile
+        # with the project amxxpc + include set, then load and run on the
+        # real chain. ReAPI-based mods are known to need reapi, they are
+        # documented but not shipped.
+        shell: bash
+        run: |
+          mkdir -p /tmp/mods && cd /tmp/mods
+          git clone --depth 1 https://github.com/DRON12261/Zombie-Plague-Rise-of-the-Dead
+          git clone --depth 1 https://github.com/119call911/biohazard-amxx
+          git clone --depth 1 https://github.com/aLbaneso/Deathrun
+          git clone --depth 1 https://github.com/KoRrNiK/BaseBuilder-TURBO
+          git clone --depth 1 https://github.com/s1lentq/reapi reapi
+          mkdir -p /tmp/amxxpc-build
+
+      - name: Mod battery - build host amxxpc
+        shell: bash
+        run: |
+          bash glue/build_amxxpc_host.sh
+          mkdir -p /tmp/amxxpc-build
+          cp glue/out/amxxpc-host/amxxpc /tmp/amxxpc-build/amxxpc
+
+      - name: Mod battery - compile gate + real-chain run gates
+        shell: bash
+        run: |
+          # stock include set must exist for the battery (cstrike host tree)
+          [ -d out/cs-host-test/cstrike/addons/amxmodx/scripting/include ] ||             SKIP_RUN=1 bash scripts/run_cstrike_host_test.sh
+          bash scripts/mod_battery_compile.sh
+
+      - name: Run changelevel (map-change) stress test
+        # full chain with YaPB bots, three changelevel commands driven through
+        # the dedicated server console. Gate = 4 map spawns, module re-attach
+        # on every map, zero crashes. This is the setup that reproduces the
+        # map-change crash reported from the device.
+        shell: bash
+        run: bash scripts/run_changelevel_test.sh
+
+      - name: Install client-test dependencies
+        # a dedicated CI server never connects a client, so that whole layer
+        # (connect, MOTD, authid natives) gets its own test further down
+        shell: bash
+        run: |
+          sudo apt-get update -qq || true
+          sudo apt-get install -y -qq libsdl2-dev libfreetype-dev libfreetype6-dev xvfb x11-utils || \
+            sudo apt-get install -y -qq xvfb || true
+
+      - name: Build engine (full, with client + ref_soft)
+        shell: bash
+        run: |
+          cd xash3d-fwgs-master
+          # ref/soft is opt-in in FWGS waf; without it the client test just
+          # dies with "Can't initialize any renderer"
+          python3 ./waf configure -o build-full -T release -8 --enable-soft
+          python3 ./waf build
+
+      - name: Run client-connect test and evaluate
+        shell: bash
+        run: bash glue/run_client_test.sh
+
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm64-test-logs
+          path: |
+            out/host-test/console.txt
+            out/host-test/engine.log
+            out/client-test/console.txt
+            out/client-test/engine.log
+            out/cs-host-test/console.txt
+            out/cs-host-test/engine.log
+            out/cs-changelevel-test/console.txt
+            out/cs-changelevel-test/engine.log
+            out/cs-build/3rdparty/yapb/yapb_arm64.so
+            out/cs-build/3rdparty/ReGameDLL_CS/regamedll/cs_arm64.so
+            out/host/libmetamod_android_arm64.so
+          if-no-files-found: warn
+
+      - name: Telegram report
+        if: always()
+        shell: bash
+        run: |
+          [ -n "${{ secrets.TG_BOT_TOKEN }}" ] || exit 0
+          ARCH=$(uname -m)
+          RES=""
+          if [ -f out/host-test/console.txt ] && grep -q "Scrolling message" out/host-test/console.txt && ! grep -q "Crash: signal" out/host-test/console.txt; then
+            RES="$(printf '%s\n%s' "$RES" "OK arm64 server test ($ARCH): full chain, no crash")"
+          else
+            RES="$(printf '%s\n%s' "$RES" "FAIL arm64 server test ($ARCH): logs in action artifacts")"
+          fi
+          if [ -f out/client-test/console.txt ] && grep -q "became an admin" out/client-test/console.txt && ! grep -q "Crash: signal" out/client-test/console.txt; then
+            RES="$(printf '%s\n%s' "$RES" "OK arm64 client connect: get_user_authid path clean")"
+          else
+            RES="$(printf '%s\n%s' "$RES" "FAIL arm64 client connect: logs in action artifacts")"
+          fi
+          # full cstrike chain gate = core auto-create + no crashes
+          if [ -f out/cs-host-test/console.txt ] && grep -q "CVAR] 3 auto bot_quota ptr=[1-9]" out/cs-host-test/console.txt && grep -q "CVAR] 8 null-handle semantics OK" out/cs-host-test/console.txt && ! grep -qE "Crash: signal|SIGSEGV|Segmentation" out/cs-host-test/console.txt; then
+            RES="$(printf '%s\n%s' "$RES" "OK arm64 cstrike test: core auto-creates missing cvars, full cvar API clean")"
+          else
+            RES="$(printf '%s\n%s' "$RES" "FAIL arm64 cstrike test: see out/cs-host-test/console.txt")"
+          fi
+          # changelevel gate = 4 map spawns, no crash
+          CLSPAWNS=$(grep -ac "Spawn Server" out/cs-changelevel-test/engine.log 2>/dev/null || echo 0)
+          if [ -f out/cs-changelevel-test/engine.log ] && [ "$CLSPAWNS" -ge 4 ] && ! grep -qiE "SIGSEGV|Segmentation|Sys_Crash|Crash: signal|Backtrace:" out/cs-changelevel-test/engine.log out/cs-changelevel-test/console.txt 2>/dev/null; then
+            RES="$(printf '%s\n%s' "$RES" "OK arm64 changelevel test: 3x changelevel with YaPB, no crash ($CLSPAWNS map loads)")"
+          else
+            RES="$(printf '%s\n%s' "$RES" "FAIL arm64 changelevel test: log out/cs-changelevel-test/engine.log")"
+          fi
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TG_BOT_TOKEN }}/sendMessage" \
+            -d chat_id="${{ secrets.TG_CHAT_ID }}" -d text="$RES" > /dev/null || true
